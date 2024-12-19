@@ -90,7 +90,7 @@ x_tensor = keras.Input(shape=(224,224,3))
 pre_trained = keras.applications.ResNet50(include_top=False, weights='imagenet', input_tensor=x_tensor)
 
 # define callbacks
-checkpoint_callback = keras.callbacks.ModelCheckpoint(filepath='rn_trying.keras', monitor='val_accuracy',\
+checkpoint_callback = keras.callbacks.ModelCheckpoint(filepath='model.keras', monitor='val_accuracy',\
                                                       save_best_only=True,mode='max',verbose=1)
 lr_scheduler = keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3,verbose=1)
 early_stopping = keras.callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
@@ -114,7 +114,7 @@ transfer_learning_model.compile(optimizer=keras.optimizers.Adam(learning_rate=1e
 transfer_learning_model.fit(train_dataset, validation_data=test_dataset, epochs=50, callbacks=[checkpoint_callback, lr_scheduler, early_stopping])
 
 # evaluate model
-model = keras.models.load_model('rn_trying.keras')
+model = keras.models.load_model('model.keras')
 model.evaluate(test_dataset)
 
 # plot confusion matrix
