@@ -8,6 +8,9 @@ from tqdm import tqdm
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
+from sklearn.metrics import confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 #--------------DATA PROCESSING--------------
 
@@ -27,9 +30,10 @@ def preprocess_data(img_dir):
         img_path = os.path.join(img_dir, img_file)
         img = Image.open(img_path).convert('RGB') # 3 channels to match ImageNet
 
-
+        # resize for same shape as ImageNet
         img = tf.image.resize(img, [224, 224])
 
+        # random data augmentation
         img = tf.image.random_contrast(img, lower=0.8, upper=1.2) 
         img = tf.image.random_brightness(img, max_delta=0.2)
         img = tf.image.random_flip_left_right(img)
@@ -58,13 +62,6 @@ def preprocess_data(img_dir):
     label_encoder = LabelEncoder()
     labels = label_encoder.fit_transform(labels)
 
-    # stack images into a tensor
-    # images = torch.stack(images) 
-    # labels = torch.tensor(labels, dtype=torch.long)
-
-    # images = tf.convert_to_tensor(images, dtype=tf.float32) 
-    # labels = tf.convert_to_tensor(labels, dtype=tf.int32) 
-
     return np.array(images), np.array(labels)
 
 
@@ -82,29 +79,50 @@ y_train = keras.utils.to_categorical(y_train, num_classes=num_classes)
 y_test = tf.convert_to_tensor(y_test)
 y_test = keras.utils.to_categorical(y_test, num_classes=num_classes)
 
-# Convert them to TensorFlow datasets (for batching, shuffling, etc.)
+# convert to tf datasets 
 train_dataset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
 test_dataset = tf.data.Dataset.from_tensor_slices((x_test, y_test))
+train_dataset = train_dataset.batch(16).prefetch(tf.data.experimental.AUTOTUNE)
+test_dataset = test_dataset.batch(16).prefetch(tf.data.experimental.AUTOTUNE)
 
-# Shuffle, batch, and prefetch the datasets for performance
-train_dataset = train_dataset.shuffle(buffer_size=1000).batch(32).prefetch(tf.data.experimental.AUTOTUNE)
-test_dataset = test_dataset.batch(32).prefetch(tf.data.experimental.AUTOTUNE)
-
+# set up pre-trained models
 x_tensor = keras.Input(shape=(224,224,3))
-res_net = keras.applications.ResNet50(include_top=False, weights='imagenet', input_tensor=x_tensor)
+pre_trained = keras.applications.ResNet50(include_top=False, weights='imagenet', input_tensor=x_tensor)
 
-for layer in res_net.layers:
-    res_net.trainable = True
+# define callbacks
+checkpoint_callback = keras.callbacks.ModelCheckpoint(filepath='rn_trying.keras', monitor='val_accuracy',\
+                                                      save_best_only=True,mode='max',verbose=1)
+lr_scheduler = keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3,verbose=1)
+early_stopping = keras.callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
 
+# allow fine tuning on the last 10 layers
+for layer in pre_trained.layers[:-10]:
+    pre_trained.trainable = True
+
+# add layers to the model
 transfer_learning_model = keras.models.Sequential()
-transfer_learning_model.add(res_net)
+transfer_learning_model.add(pre_trained)
 transfer_learning_model.add(keras.layers.Flatten())
-transfer_learning_model.add(keras.layers.Dense(512, activation='relu', kernel_regularizer=keras.regularizers.l2(0.01)))
-transfer_learning_model.add(keras.layers.Dropout(0.25))
-transfer_learning_model.add(keras.layers.Dense(num_classes, activation='softmax', kernel_regularizer=keras.regularizers.l2(0.01)))
+transfer_learning_model.add(keras.layers.Dense(256, activation='relu', kernel_regularizer=keras.regularizers.l2(0.005)))
+transfer_learning_model.add(keras.layers.Dropout(0.5))
+transfer_learning_model.add(keras.layers.BatchNormalization())
+transfer_learning_model.add(keras.layers.Dense(num_classes, activation='softmax', kernel_regularizer=keras.regularizers.l2(0.005)))
 transfer_learning_model.compile(optimizer=keras.optimizers.Adam(learning_rate=1e-4), loss='categorical_crossentropy', metrics = \
-                                ['accuracy', tf.keras.metrics.MeanSquaredError(),tf.keras.metrics.Recall(), tf.keras.metrics.Precision()])
+                                ['accuracy',tf.keras.metrics.Recall(), tf.keras.metrics.Precision()])
 
-transfer_learning_model.fit(train_dataset, epochs=30)
-print(10*"*", '\nRun Evaluation: ')
-transfer_learning_model.evaluate(test_dataset) 
+# train model
+transfer_learning_model.fit(train_dataset, validation_data=test_dataset, epochs=50, callbacks=[checkpoint_callback, lr_scheduler, early_stopping])
+
+# evaluate model
+model = keras.models.load_model('rn_trying.keras')
+model.evaluate(test_dataset)
+
+# plot confusion matrix
+y_pred = model.predict(x_test)
+y_pred_labels = np.argmax(y_pred, axis=1)
+y_test_labels = np.argmax(y_test, axis=1)
+conf_matrix = confusion_matrix(y_test_labels, y_pred_labels)
+plt.figure(figsize=(10, 7))
+sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues')
+plt.title(f'confusion matrix')
+plt.show()
